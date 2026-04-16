@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_BACKEND: ${{ github.repository }}/sampahku-backend
-  IMAGE_FRONTEND: ${{ github.repository }}/sampahku-frontend
-
 jobs:
   # ─────────────────────────────────────────
   # JOB 1: CODE QUALITY
@@ -96,9 +91,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set lowercase repo
+        run: echo "REPO_LC=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - uses: docker/login-action@v4
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -109,7 +107,7 @@ jobs:
         with:
           context: ./backend
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_BACKEND }}:latest
+          tags: ghcr.io/${{ env.REPO_LC }}/sampahku-backend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -119,14 +117,14 @@ jobs:
           context: ./frontend
           push: true
           build-args: NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_FRONTEND }}:latest
+          tags: ghcr.io/${{ env.REPO_LC }}/sampahku-frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Scan backend image (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_BACKEND }}:latest
+          image-ref: ghcr.io/${{ env.REPO_LC }}/sampahku-backend:latest
           format: sarif
           output: trivy-backend.sarif
           severity: CRITICAL,HIGH
@@ -141,7 +139,7 @@ jobs:
       - name: Scan frontend image (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_FRONTEND }}:latest
+          image-ref: ghcr.io/${{ env.REPO_LC }}/sampahku-frontend:latest
           format: sarif
           output: trivy-frontend.sarif
           severity: CRITICAL,HIGH
@@ -164,6 +162,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set lowercase repo
+        run: echo "REPO_LC=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -174,10 +175,12 @@ jobs:
             set -e
             echo "🚀 Deploying SampahKu..."
 
+            REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+
             cd /home/ubuntu/sampah-app
             git pull origin main
 
-            cat > .env << 'ENVEOF'
+            cat > .env << ENVEOF
             DB_HOST=${{ secrets.DB_HOST }}
             DB_PORT=3306
             DB_NAME=${{ secrets.DB_NAME }}
@@ -191,13 +194,13 @@ jobs:
             S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
             FRONTEND_URL=https://deden-cloud.com
             NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
-            GITHUB_REPOSITORY=${{ github.repository }}
+            GITHUB_REPOSITORY=${REPO_LC}
             ENVEOF
 
             echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-            docker pull ghcr.io/${{ github.repository }}/sampahku-backend:latest
-            docker pull ghcr.io/${{ github.repository }}/sampahku-frontend:latest
+            docker pull ghcr.io/${REPO_LC}/sampahku-backend:latest
+            docker pull ghcr.io/${REPO_LC}/sampahku-frontend:latest
 
             docker compose down --remove-orphans
             docker compose up -d
