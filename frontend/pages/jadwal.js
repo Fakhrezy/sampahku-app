@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import api from './api/axios'
+import { TrashIcon, CalendarIcon, ClockIcon } from '../components/Icons'
 
 export default function Jadwal() {
   const [jadwal, setJadwal] = useState([])
@@ -25,11 +26,14 @@ export default function Jadwal() {
   return (
     <div className="min-h-screen bg-gray-50">
       <nav className="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
-        <Link href="/" className="font-bold text-green-700 text-lg">🗑️ SampahKu</Link>
+        <Link href="/" className="inline-flex items-center gap-2 font-bold text-green-700 text-lg">
+          <TrashIcon className="w-6 h-6" />
+          SampahKu
+        </Link>
         <div className="flex gap-3">
-          <Link href="/login"
+          <Link href="/admin"
             className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-700">
-            Masuk
+            Admin
           </Link>
         </div>
       </nav>
@@ -44,7 +48,9 @@ export default function Jadwal() {
           <p className="text-gray-400 text-center py-12">Memuat jadwal...</p>
         ) : jadwal.length === 0 ? (
           <div className="bg-white rounded-xl p-12 text-center text-gray-400">
-            <p className="text-4xl mb-3">📅</p>
+            <div className="mb-3 mx-auto w-14 h-14 rounded-full bg-green-100 text-green-700 flex items-center justify-center">
+              <CalendarIcon className="w-7 h-7" />
+            </div>
             <p>Belum ada jadwal tersedia.</p>
           </div>
         ) : (
@@ -61,8 +67,9 @@ export default function Jadwal() {
                     {j.hari}
                   </span>
                 </div>
-                <p className="text-sm text-gray-600">
-                  🕐 {j.jam_mulai?.slice(0, 5)} – {j.jam_selesai?.slice(0, 5)} WIB
+                <p className="text-sm text-gray-600 inline-flex items-center gap-1">
+                  <ClockIcon className="w-4 h-4" />
+                  {j.jam_mulai?.slice(0, 5)} – {j.jam_selesai?.slice(0, 5)} WIB
                 </p>
                 {j.keterangan && (
                   <p className="text-sm text-gray-400 mt-2 italic">{j.keterangan}</p>

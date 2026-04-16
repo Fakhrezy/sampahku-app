@@ -6,8 +6,6 @@ const morgan = require('morgan');
 const mysql = require('mysql2/promise');
 const multer = require('multer');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const path = require('path');
 
 const app = express();
@@ -38,7 +36,7 @@ const s3 = new S3Client({
   },
 });
 
-// Upload pakai memoryStorage lalu manual kirim ke S3
+// Upload pakai memoryStorage
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -61,41 +59,18 @@ async function uploadToS3(file) {
   return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 }
 
-// JWT middleware
-const auth = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ message: 'Token tidak ada' });
-  try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ message: 'Token tidak valid' });
-  }
-};
-
-// Buat tabel otomatis
+// Init tabel
 async function initDB() {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      nama VARCHAR(100) NOT NULL,
-      email VARCHAR(150) UNIQUE NOT NULL,
-      password VARCHAR(255) NOT NULL,
-      role ENUM('masyarakat','admin') DEFAULT 'masyarakat',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
   await db.execute(`
     CREATE TABLE IF NOT EXISTS laporan (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      user_id INT NOT NULL,
+      nama_pelapor VARCHAR(100) NOT NULL,
       judul VARCHAR(200) NOT NULL,
       deskripsi TEXT NOT NULL,
       lokasi VARCHAR(255) NOT NULL,
       foto_url VARCHAR(500),
       status ENUM('menunggu','diproses','selesai','ditolak') DEFAULT 'menunggu',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id)
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
   await db.execute(`
@@ -115,85 +90,32 @@ async function initDB() {
 
 // ROUTES
 
+// Health check
 app.get('/health', (req, res) => res.json({ status: 'OK', time: new Date() }));
 
-// Register
-app.post('/api/auth/register', async (req, res) => {
+// GET semua laporan (publik)
+app.get('/api/laporan', async (req, res) => {
   try {
-    const { nama, email, password } = req.body;
-    if (!nama || !email || !password)
-      return res.status(400).json({ message: 'Semua field wajib diisi' });
-    const hash = await bcrypt.hash(password, 10);
-    const [result] = await db.execute(
-      'INSERT INTO users (nama, email, password) VALUES (?, ?, ?)',
-      [nama, email, hash]
-    );
-    const token = jwt.sign(
-      { id: result.insertId, role: 'masyarakat' },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    res.status(201).json({
-      token,
-      user: { id: result.insertId, nama, email, role: 'masyarakat' }
-    });
-  } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY')
-      return res.status(400).json({ message: 'Email sudah terdaftar' });
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// Login
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const [rows] = await db.execute('SELECT * FROM users WHERE email = ?', [email]);
-    if (!rows.length)
-      return res.status(401).json({ message: 'Email atau password salah' });
-    const valid = await bcrypt.compare(password, rows[0].password);
-    if (!valid)
-      return res.status(401).json({ message: 'Email atau password salah' });
-    const token = jwt.sign(
-      { id: rows[0].id, role: rows[0].role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-    res.json({
-      token,
-      user: { id: rows[0].id, nama: rows[0].nama, email: rows[0].email, role: rows[0].role }
-    });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// Get laporan
-app.get('/api/laporan', auth, async (req, res) => {
-  try {
-    const isAdmin = req.user.role === 'admin';
-    const [rows] = isAdmin
-      ? await db.execute('SELECT l.*, u.nama as pelapor FROM laporan l JOIN users u ON l.user_id = u.id ORDER BY l.created_at DESC')
-      : await db.execute('SELECT * FROM laporan WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
+    const [rows] = await db.execute('SELECT * FROM laporan ORDER BY created_at DESC');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// Buat laporan + upload foto ke S3
-app.post('/api/laporan', auth, upload.single('foto'), async (req, res) => {
+// POST buat laporan + upload foto ke S3 (publik)
+app.post('/api/laporan', upload.single('foto'), async (req, res) => {
   try {
-    const { judul, deskripsi, lokasi } = req.body;
-    if (!judul || !deskripsi || !lokasi)
-      return res.status(400).json({ message: 'Judul, deskripsi, lokasi wajib diisi' });
+    const { nama_pelapor, judul, deskripsi, lokasi } = req.body;
+    if (!nama_pelapor || !judul || !deskripsi || !lokasi)
+      return res.status(400).json({ message: 'Semua field wajib diisi' });
     let foto_url = null;
     if (req.file) {
       foto_url = await uploadToS3(req.file);
     }
     const [result] = await db.execute(
-      'INSERT INTO laporan (user_id, judul, deskripsi, lokasi, foto_url) VALUES (?, ?, ?, ?, ?)',
-      [req.user.id, judul, deskripsi, lokasi, foto_url]
+      'INSERT INTO laporan (nama_pelapor, judul, deskripsi, lokasi, foto_url) VALUES (?, ?, ?, ?, ?)',
+      [nama_pelapor, judul, deskripsi, lokasi, foto_url]
     );
     res.status(201).json({ message: 'Laporan berhasil dibuat', id: result.insertId, foto_url });
   } catch (err) {
@@ -201,11 +123,9 @@ app.post('/api/laporan', auth, upload.single('foto'), async (req, res) => {
   }
 });
 
-// Update status laporan (admin)
-app.patch('/api/laporan/:id/status', auth, async (req, res) => {
+// PATCH update status laporan (admin)
+app.patch('/api/laporan/:id/status', async (req, res) => {
   try {
-    if (req.user.role !== 'admin')
-      return res.status(403).json({ message: 'Akses ditolak' });
     const { status } = req.body;
     await db.execute('UPDATE laporan SET status = ? WHERE id = ?', [status, req.params.id]);
     res.json({ message: 'Status diperbarui' });
@@ -214,7 +134,7 @@ app.patch('/api/laporan/:id/status', auth, async (req, res) => {
   }
 });
 
-// Get jadwal
+// GET jadwal (publik)
 app.get('/api/jadwal', async (req, res) => {
   try {
     const [rows] = await db.execute('SELECT * FROM jadwal ORDER BY hari, jam_mulai');
@@ -224,12 +144,12 @@ app.get('/api/jadwal', async (req, res) => {
   }
 });
 
-// Tambah jadwal (admin)
-app.post('/api/jadwal', auth, async (req, res) => {
+// POST tambah jadwal (admin)
+app.post('/api/jadwal', async (req, res) => {
   try {
-    if (req.user.role !== 'admin')
-      return res.status(403).json({ message: 'Akses ditolak' });
     const { wilayah, kelurahan, hari, jam_mulai, jam_selesai, keterangan } = req.body;
+    if (!wilayah || !kelurahan || !hari || !jam_mulai || !jam_selesai)
+      return res.status(400).json({ message: 'Data lengkap wajib diisi' });
     await db.execute(
       'INSERT INTO jadwal (wilayah, kelurahan, hari, jam_mulai, jam_selesai, keterangan) VALUES (?, ?, ?, ?, ?, ?)',
       [wilayah, kelurahan, hari, jam_mulai, jam_selesai, keterangan]
