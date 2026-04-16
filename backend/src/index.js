@@ -5,8 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const mysql = require('mysql2/promise');
 const multer = require('multer');
-const multerS3 = require('multer-s3');
-const { S3Client } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
@@ -30,7 +29,7 @@ const db = mysql.createPool({
   connectionLimit: 10,
 });
 
-// S3
+// S3 Client
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -39,22 +38,28 @@ const s3 = new S3Client({
   },
 });
 
-// Upload ke S3
+// Upload pakai memoryStorage lalu manual kirim ke S3
 const upload = multer({
-  storage: multerS3({
-    s3,
-    bucket: process.env.S3_BUCKET_NAME,
-    acl: 'public-read',
-    key: (req, file, cb) => {
-      cb(null, `laporan/${Date.now()}-${file.originalname}`);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ok = /jpeg|jpg|png/.test(path.extname(file.originalname).toLowerCase());
     cb(null, ok);
   },
 });
+
+// Helper upload ke S3
+async function uploadToS3(file) {
+  const key = `laporan/${Date.now()}-${file.originalname}`;
+  await s3.send(new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET_NAME,
+    Key: key,
+    Body: file.buffer,
+    ContentType: file.mimetype,
+    ACL: 'public-read',
+  }));
+  return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+}
 
 // JWT middleware
 const auth = (req, res, next) => {
@@ -176,4 +181,78 @@ app.get('/api/laporan', auth, async (req, res) => {
   }
 });
 
-// Buat laporan +
+// Buat laporan + upload foto ke S3
+app.post('/api/laporan', auth, upload.single('foto'), async (req, res) => {
+  try {
+    const { judul, deskripsi, lokasi } = req.body;
+    if (!judul || !deskripsi || !lokasi)
+      return res.status(400).json({ message: 'Judul, deskripsi, lokasi wajib diisi' });
+    let foto_url = null;
+    if (req.file) {
+      foto_url = await uploadToS3(req.file);
+    }
+    const [result] = await db.execute(
+      'INSERT INTO laporan (user_id, judul, deskripsi, lokasi, foto_url) VALUES (?, ?, ?, ?, ?)',
+      [req.user.id, judul, deskripsi, lokasi, foto_url]
+    );
+    res.status(201).json({ message: 'Laporan berhasil dibuat', id: result.insertId, foto_url });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Update status laporan (admin)
+app.patch('/api/laporan/:id/status', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin')
+      return res.status(403).json({ message: 'Akses ditolak' });
+    const { status } = req.body;
+    await db.execute('UPDATE laporan SET status = ? WHERE id = ?', [status, req.params.id]);
+    res.json({ message: 'Status diperbarui' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Get jadwal
+app.get('/api/jadwal', async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT * FROM jadwal ORDER BY hari, jam_mulai');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Tambah jadwal (admin)
+app.post('/api/jadwal', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin')
+      return res.status(403).json({ message: 'Akses ditolak' });
+    const { wilayah, kelurahan, hari, jam_mulai, jam_selesai, keterangan } = req.body;
+    await db.execute(
+      'INSERT INTO jadwal (wilayah, kelurahan, hari, jam_mulai, jam_selesai, keterangan) VALUES (?, ?, ?, ?, ?, ?)',
+      [wilayah, kelurahan, hari, jam_mulai, jam_selesai, keterangan]
+    );
+    res.status(201).json({ message: 'Jadwal ditambahkan' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Start server
+async function start() {
+  try {
+    await db.getConnection();
+    console.log('✅ Database connected');
+    await initDB();
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('❌ Failed to start:', err.message);
+    process.exit(1);
+  }
+}
+
+start();
